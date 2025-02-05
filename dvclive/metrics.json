@@ -1,16 +1,16 @@
 {
     "backtest": {
-        "total_return": 5.5464589743642135e-05,
-        "annualized_return": 0.00012479532692319481,
-        "annualized_volatility": 4.1032450733228433e-05,
-        "sharpe_ratio": 3.0413812651491097,
-        "max_drawdown": 0.0,
-        "win_rate": 0.03571428571428571,
-        "avg_win": 1.3866147435910534e-05,
+        "total_return": 0.00015927973399637265,
+        "annualized_return": 0.00035837940149183845,
+        "annualized_volatility": 8.35375021257676e-05,
+        "sharpe_ratio": 4.2900421053084665,
+        "max_drawdown": 1.2975041466235473e-05,
+        "win_rate": 0.10714285714285714,
+        "avg_win": 1.3273311166364388e-05,
         "avg_loss": 0,
-        "total_trades": 51,
-        "avg_position_size": 0.007921238230688712,
-        "max_position_size": 0.4911167703027002
+        "total_trades": 58,
+        "avg_position_size": 0.06684765673559392,
+        "max_position_size": 0.6147499755997381
     },
     "training": {
         "random_forest": {
@@ -57,12 +57,12 @@
             "val_validation_error": 0.12
         },
         "neural_network": {
-            "accuracy": 0.625,
+            "accuracy": 0.6000000238418579,
             "precision": 0.0,
             "recall": 0.0,
             "f1_score": 0.0,
-            "val_accuracy": 0.30000001192092896,
-            "val_loss": 0.747532069683075,
+            "val_accuracy": 0.4000000059604645,
+            "val_loss": 0.978759765625,
             "val_best_epoch": 8
         },
         "epoch": 13

@@ -1,6 +1,6 @@
 lookback_window: 20
 prediction_threshold: 0.7
-min_train_size: 50
+min_train_size: 500
 retrain_frequency: 21
 tune_hyperparameters: 1
 experiment_name: ml_ensemble_${now:%Y%m%d_%H%M%S} 
