@@ -1,0 +1,11 @@
+*data/
+
+.DS_Store
+
+.env
+.env.local
+
+venv/
+docs/
+/regime_based_quant.egg-info
+*__pycache__/
