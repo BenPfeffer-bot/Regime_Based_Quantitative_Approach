@@ -7,4 +7,11 @@ matplotlib>=3.4.2
 seaborn>=0.11.1
 ta-lib>=0.4.19
 pathlib>=1.0.1
+dvc>=3.0.0
+dvclive>=3.0.0
+dvc-data>=3.0.0
+dvc-http>=3.0.0
+dvc-objects>=3.0.0
+dvc-render>=3.0.0
+dvc-task>=3.0.0
 

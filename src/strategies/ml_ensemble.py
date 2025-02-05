@@ -14,8 +14,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.layers import Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import History
 import talib
 from dataclasses import dataclass
 import logging
@@ -26,6 +27,16 @@ class ModelPrediction:
     direction: int  # 1 for up, -1 for down, 0 for neutral
     probability: float
     model_name: str
+
+@dataclass
+class TrainingMetrics:
+    """Container for model training metrics."""
+    model_name: str
+    accuracy: float
+    precision: float
+    recall: float
+    f1_score: float
+    validation_metrics: Optional[Dict[str, float]] = None
 
 class MLEnsembleStrategy:
     """Implementation of ML ensemble forecasting strategy."""
@@ -69,6 +80,10 @@ class MLEnsembleStrategy:
         # Strategy state
         self.current_predictions: Dict[str, ModelPrediction] = {}
         self.feature_columns: List[str] = []
+        
+        # Training history
+        self.training_history: List[Dict[str, float]] = []
+        self.model_metrics: Dict[str, TrainingMetrics] = {}
         
     def _create_technical_features(
         self,
@@ -163,13 +178,12 @@ class MLEnsembleStrategy:
     
     def _create_neural_network(self) -> Sequential:
         """Create and configure Neural Network model."""
-        model = Sequential([
-            Dense(64, activation='relu', input_shape=(len(self.feature_columns),)),
-            Dropout(0.2),
-            Dense(32, activation='relu'),
-            Dropout(0.1),
-            Dense(1, activation='sigmoid')
-        ])
+        model = Sequential()
+        model.add(Dense(64, activation='relu', input_dim=len(self.feature_columns)))
+        model.add(Dropout(0.2))
+        model.add(Dense(32, activation='relu'))
+        model.add(Dropout(0.1))
+        model.add(Dense(1, activation='sigmoid'))
         
         model.compile(
             optimizer=Adam(learning_rate=0.001),
@@ -178,6 +192,50 @@ class MLEnsembleStrategy:
         )
         
         return model
+    
+    def _calculate_model_metrics(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        model_name: str,
+        validation_metrics: Optional[Dict[str, float]] = None
+    ) -> TrainingMetrics:
+        """Calculate performance metrics for a model."""
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        
+        metrics = TrainingMetrics(
+            model_name=model_name,
+            accuracy=float(accuracy_score(y_true, y_pred)),
+            precision=float(precision_score(y_true, y_pred)),
+            recall=float(recall_score(y_true, y_pred)),
+            f1_score=float(f1_score(y_true, y_pred)),
+            validation_metrics=validation_metrics
+        )
+        
+        return metrics
+    
+    def _update_training_history(
+        self,
+        metrics: TrainingMetrics,
+        epoch: Optional[int] = None
+    ) -> None:
+        """Update training history with new metrics."""
+        history_entry = {
+            f'{metrics.model_name}/accuracy': metrics.accuracy,
+            f'{metrics.model_name}/precision': metrics.precision,
+            f'{metrics.model_name}/recall': metrics.recall,
+            f'{metrics.model_name}/f1_score': metrics.f1_score,
+        }
+        
+        if metrics.validation_metrics:
+            for metric_name, value in metrics.validation_metrics.items():
+                history_entry[f'{metrics.model_name}/val_{metric_name}'] = value
+        
+        if epoch is not None:
+            history_entry['epoch'] = epoch
+        
+        self.training_history.append(history_entry)
+        self.model_metrics[metrics.model_name] = metrics
     
     def train_models(
         self,
@@ -201,31 +259,79 @@ class MLEnsembleStrategy:
         X, y = self._prepare_training_data(features, prices, forward_returns)
         
         if len(X) < self.min_train_size:
-            logging.warning(f"Insufficient data for training: {len(X)} < {self.min_train_size}")
+            logging.debug(f"Insufficient data for training: {len(X)} < {self.min_train_size}")
             return
         
-        # Train Random Forest
-        rf_model = self._create_random_forest()
-        rf_model.fit(X, y)
-        self.models['random_forest'] = rf_model
+        # Reset training history
+        self.training_history = []
         
-        # Train XGBoost
-        xgb_model = self._create_xgboost()
-        xgb_model.fit(X, y)
-        self.models['xgboost'] = xgb_model
-        
-        # Train Neural Network
-        nn_model = self._create_neural_network()
-        nn_model.fit(
-            X, y,
-            epochs=50,
-            batch_size=32,
-            verbose=0,
-            validation_split=0.2
-        )
-        self.models['neural_network'] = nn_model
-        
-        self.last_train_date = current_date
+        try:
+            # Train Random Forest
+            rf_model = self._create_random_forest()
+            rf_model.fit(X, y)
+            self.models['random_forest'] = rf_model
+            
+            # Calculate and log RF metrics
+            rf_pred = rf_model.predict(X)
+            rf_metrics = self._calculate_model_metrics(y, rf_pred, 'random_forest')
+            self._update_training_history(rf_metrics)
+            
+            # Train XGBoost with corrected parameters
+            xgb_model = self._create_xgboost()
+            eval_set = [(X, y)]
+            xgb_model.fit(
+                X, y,
+                eval_set=eval_set,
+                verbose=False
+            )
+            self.models['xgboost'] = xgb_model
+            
+            # Calculate and log XGB metrics
+            xgb_pred = xgb_model.predict(X)
+            xgb_metrics = self._calculate_model_metrics(
+                y, xgb_pred, 'xgboost',
+                validation_metrics={'validation_error': 1 - xgb_model.score(X, y)}
+            )
+            self._update_training_history(xgb_metrics)
+            
+            # Train Neural Network
+            nn_model = self._create_neural_network()
+            history = nn_model.fit(
+                X, y,
+                epochs=50,
+                batch_size=32,
+                verbose=0,
+                validation_split=0.2
+            )
+            self.models['neural_network'] = nn_model
+            
+            # Log NN training history
+            for epoch, metrics in enumerate(zip(
+                history.history['accuracy'],
+                history.history['val_accuracy'],
+                history.history['loss'],
+                history.history['val_loss']
+            )):
+                train_acc, val_acc, train_loss, val_loss = metrics
+                nn_metrics = TrainingMetrics(
+                    model_name='neural_network',
+                    accuracy=float(train_acc),
+                    precision=0.0,  # Not available from Keras history
+                    recall=0.0,     # Not available from Keras history
+                    f1_score=0.0,   # Not available from Keras history
+                    validation_metrics={
+                        'accuracy': float(val_acc),
+                        'loss': float(val_loss)
+                    }
+                )
+                self._update_training_history(nn_metrics, epoch)
+            
+            self.last_train_date = current_date
+            
+        except Exception as e:
+            logging.error(f"Error during model training: {str(e)}")
+            # Keep existing models if training fails
+            return
         
     def generate_predictions(
         self,

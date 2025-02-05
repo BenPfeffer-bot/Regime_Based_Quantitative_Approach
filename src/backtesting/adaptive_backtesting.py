@@ -2,12 +2,31 @@
 """
 Adaptive Backtesting Module
 
-This module provides functionality to:
-1. Run backtests using pre-computed indicator files
-2. Generate performance reports
-3. Create visualization plots
-4. Save results in standardized format
+A comprehensive backtesting framework for financial trading strategies that provides:
+1. Automated backtesting of trading strategies across multiple instruments
+2. Performance analysis and metric calculation
+3. Visualization of trading results and market regimes
+4. Standardized reporting and result storage
+
+Key Features:
+- Multi-instrument backtesting support
+- Regime-aware strategy testing
+- Performance visualization
+- Automated report generation
+- Risk management integration
+
+Dependencies:
+- pandas
+- numpy
+- matplotlib
+- seaborn
+- pathlib
+- logging
+
+Version: 1.0.0
+Last Updated: 2025-02-05
 """
+
 
 import sys
 from pathlib import Path
@@ -38,7 +57,47 @@ sns.set_context("paper", font_scale=1.2)
 
 
 class BacktestRunner:
-    """Class to run backtests and generate reports."""
+    """
+    A comprehensive backtesting framework for evaluating trading strategies.
+    
+    This class handles the complete backtesting workflow including:
+    - Data loading and preprocessing
+    - Strategy execution
+    - Performance measurement
+    - Result visualization
+    - Report generation
+    
+    Attributes:
+        strategy (AdaptiveMultiRegimeStrategy): Trading strategy instance
+        indicators_dir (Path): Directory containing pre-computed indicator files
+        output_dir (Path): Directory for storing backtest results
+        initial_capital (float): Starting capital for each backtest
+        max_risk_pct (float): Maximum risk percentage per trade
+        run_dir (Path): Unique directory for current backtest run
+    
+    Example:
+        ```python
+        # Basic usage
+        runner = BacktestRunner(
+            initial_capital=100000.0,
+            max_risk_pct=0.2
+        )
+        results = runner.run_all_backtests()
+        
+        # Custom strategy and directories
+        custom_strategy = AdaptiveMultiRegimeStrategy(
+            lookback_period=50,
+            volatility_window=20
+        )
+        runner = BacktestRunner(
+            strategy=custom_strategy,
+            indicators_dir=Path("./data/indicators"),
+            output_dir=Path("./results"),
+            initial_capital=200000.0
+        )
+        results = runner.run_all_backtests()
+        ```
+    """
     
     def __init__(
         self,
@@ -63,11 +122,51 @@ class BacktestRunner:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
     def run_single_backtest(
-        self, 
-        df: pd.DataFrame, 
-        ticker: str
-    ) -> Tuple[pd.DataFrame, Dict[str, float]]:
-        """Run backtest on a single instrument."""
+    self, 
+    df: pd.DataFrame, 
+    ticker: str
+) -> Tuple[pd.DataFrame, Dict[str, float]]:
+        """
+        Execute backtest for a single financial instrument.
+        
+        Performs a complete backtest including:
+        1. Strategy execution
+        2. Performance tracking
+        3. Metrics calculation
+        
+        Args:
+            df (pd.DataFrame): DataFrame containing price data and indicators
+                Required columns: ['Close', 'Open', 'High', 'Low', technical indicators...]
+            ticker (str): Instrument identifier
+            
+        Returns:
+            Tuple containing:
+                - pd.DataFrame: Detailed backtest results including:
+                    - Signal: Trading signals (-1, 0, 1)
+                    - Equity: Portfolio value
+                    - Regime: Market regime classification
+                - Dict[str, float]: Performance metrics including:
+                    - final_net_worth: Final portfolio value ratio
+                    - total_return: Percentage return
+                    - sharpe_ratio: Risk-adjusted return metric
+                    
+        Raises:
+            ValueError: If required columns are missing from input DataFrame
+            Exception: Strategy-specific execution errors
+            
+        Example:
+            ```python
+            # Load data
+            df = pd.read_parquet("AAPL_indicators.parquet")
+            
+            # Run backtest
+            results, metrics = runner.run_single_backtest(df, "AAPL")
+            
+            # Access results
+            print(f"Total Return: {metrics['total_return']:.2f}%")
+            print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+            ```
+        """
         try:
             # Run backtest
             results = self.strategy.backtest(
