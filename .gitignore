@@ -9,3 +9,7 @@ venv/
 docs/
 /regime_based_quant.egg-info
 *__pycache__/
+
+models/
+
+

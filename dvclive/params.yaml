@@ -1,0 +1,9 @@
+lookback_window: 20
+prediction_threshold: 0.7
+min_train_size: 50
+retrain_frequency: 21
+tune_hyperparameters: false
+data_start_date: '2022-02-07 00:00:00'
+data_end_date: '2025-02-05 00:00:00'
+num_stocks: 50
+num_trading_days: 745

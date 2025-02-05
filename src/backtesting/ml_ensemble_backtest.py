@@ -171,14 +171,16 @@ def save_results(results: pd.DataFrame, metrics: dict, save_dir: Path, live: Liv
     
     # Log metrics using DVCLive
     for metric_name, value in metrics.items():
-        live.log_metric(f'backtest/{metric_name}', value)
+        if isinstance(value, (int, float)):
+            live.log_metric(f'backtest/{metric_name}', value)
 
 def main():
     # Get parameters from command line or use defaults
     lookback_window = int(sys.argv[1]) if len(sys.argv) > 1 else 20
     prediction_threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 0.7
-    min_train_size = int(sys.argv[3]) if len(sys.argv) > 3 else 50  # Reduced from 100 to match data
+    min_train_size = int(sys.argv[3]) if len(sys.argv) > 3 else 50
     retrain_frequency = int(sys.argv[4]) if len(sys.argv) > 4 else 21
+    tune_hyperparameters = bool(int(sys.argv[5])) if len(sys.argv) > 5 else False
     
     # Initialize DVCLive
     with Live(save_dvc_exp=True) as live:
@@ -188,6 +190,7 @@ def main():
             live.log_param("prediction_threshold", prediction_threshold)
             live.log_param("min_train_size", min_train_size)
             live.log_param("retrain_frequency", retrain_frequency)
+            live.log_param("tune_hyperparameters", tune_hyperparameters)
             
             # Create results directory
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -214,9 +217,45 @@ def main():
             
             # Run backtest
             logging.info('Running backtest...')
+            
+            # Split data for walk-forward optimization
+            train_end = market_data.index[int(len(market_data) * 0.7)]
+            validation_end = market_data.index[int(len(market_data) * 0.85)]
+            
+            # Train and tune on training data
+            if tune_hyperparameters:
+                logging.info('Tuning hyperparameters on training data...')
+                strategy.train_models(
+                    prices=market_data.loc[:train_end, 'close'],
+                    volumes=market_data.loc[:train_end, 'volume'],
+                    current_date=train_end,
+                    tune_hyperparameters=True
+                )
+                
+                # Validate on validation set
+                logging.info('Validating on validation data...')
+                validation_results = strategy.backtest(
+                    prices=market_data.loc[train_end:validation_end, 'close'],
+                    volumes=market_data.loc[train_end:validation_end, 'volume'],
+                    initial_capital=100000.0
+                )
+                
+                # Log validation metrics
+                validation_returns = validation_results['Returns'].fillna(0)
+                validation_metrics = {
+                    'validation_return': float(validation_returns.sum()),
+                    'validation_sharpe': float(validation_returns.mean() / validation_returns.std() * np.sqrt(252)) if validation_returns.std() != 0 else 0,
+                    'validation_win_rate': float((validation_returns > 0).sum() / len(validation_returns))
+                }
+                
+                for metric_name, value in validation_metrics.items():
+                    live.log_metric(f'validation/{metric_name}', value)
+            
+            # Run final backtest on test data
+            logging.info('Running final backtest on test data...')
             results = strategy.backtest(
-                prices=market_data['close'],
-                volumes=market_data['volume'],
+                prices=market_data.loc[validation_end:, 'close'],
+                volumes=market_data.loc[validation_end:, 'volume'],
                 initial_capital=100000.0
             )
             
@@ -265,7 +304,14 @@ def main():
             if hasattr(strategy, 'training_history'):
                 for epoch, history in enumerate(strategy.training_history):
                     for metric_name, value in history.items():
-                        live.log_metric(f'training/{metric_name}', value)
+                        # Skip dictionary metrics (like feature importance)
+                        if isinstance(value, (int, float)):
+                            live.log_metric(f'training/{metric_name}', value)
+                        elif isinstance(value, dict):
+                            # For feature importance, log each feature separately
+                            for feature, importance in value.items():
+                                if isinstance(importance, (int, float)):
+                                    live.log_metric(f'feature_importance/{metric_name}/{feature}', importance)
                     live.next_step()
                     
         except Exception as e:

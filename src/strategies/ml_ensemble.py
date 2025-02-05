@@ -16,10 +16,14 @@ import xgboost as xgb
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import History
+from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint
 import talib
 from dataclasses import dataclass
 import logging
+from sklearn.model_selection import GridSearchCV
+from kerastuner.tuners import RandomSearch
+from kerastuner.engine.hyperparameters import HyperParameters
+from pathlib import Path
 
 @dataclass
 class ModelPrediction:
@@ -173,7 +177,9 @@ class MLEnsembleStrategy:
             learning_rate=0.1,
             subsample=0.8,
             colsample_bytree=0.8,
-            random_state=42
+            random_state=42,
+            use_label_encoder=False,
+            eval_metric='logloss'
         )
     
     def _create_neural_network(self) -> Sequential:
@@ -189,6 +195,24 @@ class MLEnsembleStrategy:
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
             metrics=['accuracy']
+        )
+        
+        # Create models directory if it doesn't exist
+        models_dir = Path('models')
+        models_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create callbacks
+        self.early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True
+        )
+        
+        self.model_checkpoint = ModelCheckpoint(
+            str(models_dir / 'nn_model_{epoch:02d}.h5'),
+            monitor='val_loss',
+            save_best_only=True,
+            mode='min'
         )
         
         return model
@@ -229,7 +253,12 @@ class MLEnsembleStrategy:
         
         if metrics.validation_metrics:
             for metric_name, value in metrics.validation_metrics.items():
-                history_entry[f'{metrics.model_name}/val_{metric_name}'] = value
+                if metric_name == 'feature_importance':
+                    # Store feature importance separately
+                    for feature, importance in value.items():
+                        history_entry[f'{metrics.model_name}/feature_importance/{feature}'] = importance
+                else:
+                    history_entry[f'{metrics.model_name}/val_{metric_name}'] = value
         
         if epoch is not None:
             history_entry['epoch'] = epoch
@@ -237,13 +266,121 @@ class MLEnsembleStrategy:
         self.training_history.append(history_entry)
         self.model_metrics[metrics.model_name] = metrics
     
+    def _tune_random_forest(self, X: np.ndarray, y: np.ndarray) -> RandomForestClassifier:
+        """Tune Random Forest hyperparameters using cross-validation."""
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [5, 10, 15],
+            'min_samples_split': [5, 10, 15],
+            'min_samples_leaf': [2, 5, 8]
+        }
+        
+        rf = RandomForestClassifier(random_state=42)
+        grid_search = GridSearchCV(
+            rf, param_grid,
+            cv=5,
+            scoring='accuracy',
+            n_jobs=-1
+        )
+        grid_search.fit(X, y)
+        
+        logging.info(f"Best Random Forest parameters: {grid_search.best_params_}")
+        return grid_search.best_estimator_
+    
+    def _tune_xgboost(self, X: np.ndarray, y: np.ndarray) -> xgb.XGBClassifier:
+        """Tune XGBoost hyperparameters using cross-validation."""
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_depth': [3, 6, 9],
+            'learning_rate': [0.01, 0.1, 0.3],
+            'subsample': [0.6, 0.8, 1.0],
+            'colsample_bytree': [0.6, 0.8, 1.0]
+        }
+        
+        xgb_model = xgb.XGBClassifier(random_state=42)
+        grid_search = GridSearchCV(
+            xgb_model, param_grid,
+            cv=5,
+            scoring='accuracy',
+            n_jobs=-1
+        )
+        grid_search.fit(X, y)
+        
+        logging.info(f"Best XGBoost parameters: {grid_search.best_params_}")
+        return grid_search.best_estimator_
+    
+    def _tune_neural_network(self, X: np.ndarray, y: np.ndarray) -> Sequential:
+        """Tune Neural Network hyperparameters using Keras Tuner."""
+        # Create tuner directory if it doesn't exist
+        tuner_dir = Path('tuner_results')
+        tuner_dir.mkdir(parents=True, exist_ok=True)
+        
+        def build_model(hp):
+            model = Sequential()
+            
+            # Tune first dense layer
+            model.add(Dense(
+                units=hp.Int('units_1', min_value=32, max_value=128, step=32),
+                activation=hp.Choice('activation_1', ['relu', 'tanh']),
+                input_dim=X.shape[1]
+            ))
+            model.add(Dropout(hp.Float('dropout_1', min_value=0.1, max_value=0.3, step=0.1)))
+            
+            # Tune second dense layer
+            model.add(Dense(
+                units=hp.Int('units_2', min_value=16, max_value=64, step=16),
+                activation=hp.Choice('activation_2', ['relu', 'tanh'])
+            ))
+            model.add(Dropout(hp.Float('dropout_2', min_value=0.1, max_value=0.3, step=0.1)))
+            
+            # Output layer
+            model.add(Dense(1, activation='sigmoid'))
+            
+            # Tune learning rate
+            learning_rate = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='log')
+            model.compile(
+                optimizer=Adam(learning_rate=learning_rate),
+                loss='binary_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            return model
+        
+        tuner = RandomSearch(
+            build_model,
+            objective='val_accuracy',
+            max_trials=5,
+            directory=str(tuner_dir),
+            project_name='ml_ensemble'
+        )
+        
+        # Early stopping during tuning
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True
+        )
+        
+        tuner.search(
+            X, y,
+            epochs=50,
+            validation_split=0.2,
+            callbacks=[early_stopping]
+        )
+        
+        logging.info("Best Neural Network hyperparameters:")
+        logging.info(tuner.get_best_hyperparameters()[0].values)
+        
+        return tuner.get_best_models()[0]
+    
     def train_models(
         self,
         prices: pd.Series,
         volumes: pd.Series,
-        current_date: pd.Timestamp
+        current_date: pd.Timestamp,
+        tune_hyperparameters: bool = False
     ) -> None:
-        """Train all models in the ensemble."""
+        """Train all models in the ensemble with optional hyperparameter tuning."""
         # Check if retraining is needed
         if (self.last_train_date is not None and
             (current_date - self.last_train_date).days < self.retrain_frequency):
@@ -266,65 +403,92 @@ class MLEnsembleStrategy:
         self.training_history = []
         
         try:
-            # Train Random Forest
-            rf_model = self._create_random_forest()
-            rf_model.fit(X, y)
+            if tune_hyperparameters:
+                # Tune and train models with optimal parameters
+                rf_model = self._tune_random_forest(X, y)
+                xgb_model = self._tune_xgboost(X, y)
+                nn_model = self._tune_neural_network(X, y)
+            else:
+                # Use default configurations
+                rf_model = self._create_random_forest()
+                rf_model.fit(X, y)
+                
+                xgb_model = self._create_xgboost()
+                # Split data for validation
+                train_size = int(0.8 * len(X))
+                X_train, X_val = X[:train_size], X[train_size:]
+                y_train, y_val = y[:train_size], y[train_size:]
+                
+                eval_set = [(X_train, y_train), (X_val, y_val)]
+                xgb_model.fit(
+                    X_train, y_train,
+                    eval_set=eval_set,
+                    verbose=False
+                )
+                
+                nn_model = self._create_neural_network()
+                history = nn_model.fit(
+                    X, y,
+                    epochs=50,
+                    batch_size=32,
+                    verbose=0,
+                    validation_split=0.2,
+                    callbacks=[self.early_stopping, self.model_checkpoint]
+                )
+            
             self.models['random_forest'] = rf_model
+            self.models['xgboost'] = xgb_model
+            self.models['neural_network'] = nn_model
             
             # Calculate and log RF metrics
             rf_pred = rf_model.predict(X)
             rf_metrics = self._calculate_model_metrics(y, rf_pred, 'random_forest')
-            self._update_training_history(rf_metrics)
             
-            # Train XGBoost with corrected parameters
-            xgb_model = self._create_xgboost()
-            eval_set = [(X, y)]
-            xgb_model.fit(
-                X, y,
-                eval_set=eval_set,
-                verbose=False
-            )
-            self.models['xgboost'] = xgb_model
+            # Add feature importance to metrics
+            feature_importance = dict(zip(self.feature_columns, rf_model.feature_importances_))
+            base_metrics = rf_metrics.validation_metrics if rf_metrics.validation_metrics else {}
+            rf_metrics.validation_metrics = {
+                **base_metrics,
+                'feature_importance': feature_importance
+            }
+            self._update_training_history(rf_metrics)
             
             # Calculate and log XGB metrics
             xgb_pred = xgb_model.predict(X)
             xgb_metrics = self._calculate_model_metrics(
                 y, xgb_pred, 'xgboost',
-                validation_metrics={'validation_error': 1 - xgb_model.score(X, y)}
+                validation_metrics={
+                    'validation_error': 1 - xgb_model.score(X, y),
+                    'feature_importance': dict(zip(self.feature_columns, xgb_model.get_booster().get_score()))
+                }
             )
             self._update_training_history(xgb_metrics)
             
-            # Train Neural Network
-            nn_model = self._create_neural_network()
-            history = nn_model.fit(
-                X, y,
-                epochs=50,
-                batch_size=32,
-                verbose=0,
-                validation_split=0.2
-            )
-            self.models['neural_network'] = nn_model
-            
             # Log NN training history
-            for epoch, metrics in enumerate(zip(
-                history.history['accuracy'],
-                history.history['val_accuracy'],
-                history.history['loss'],
-                history.history['val_loss']
-            )):
-                train_acc, val_acc, train_loss, val_loss = metrics
-                nn_metrics = TrainingMetrics(
-                    model_name='neural_network',
-                    accuracy=float(train_acc),
-                    precision=0.0,  # Not available from Keras history
-                    recall=0.0,     # Not available from Keras history
-                    f1_score=0.0,   # Not available from Keras history
-                    validation_metrics={
-                        'accuracy': float(val_acc),
-                        'loss': float(val_loss)
-                    }
-                )
-                self._update_training_history(nn_metrics, epoch)
+            if hasattr(history, 'history'):
+                for epoch, metrics in enumerate(zip(
+                    history.history['accuracy'],
+                    history.history['val_accuracy'],
+                    history.history['loss'],
+                    history.history['val_loss']
+                )):
+                    train_acc, val_acc, train_loss, val_loss = metrics
+                    nn_metrics = TrainingMetrics(
+                        model_name='neural_network',
+                        accuracy=float(train_acc),
+                        precision=0.0,  # Not available from Keras history
+                        recall=0.0,     # Not available from Keras history
+                        f1_score=0.0,   # Not available from Keras history
+                        validation_metrics={
+                            'accuracy': float(val_acc),
+                            'loss': float(val_loss),
+                            'best_epoch': self.early_stopping.best_epoch if hasattr(self.early_stopping, 'best_epoch') else None
+                        }
+                    )
+                    self._update_training_history(nn_metrics, epoch)
+            
+            # Update ensemble weights based on validation performance
+            self._update_ensemble_weights(rf_metrics, xgb_metrics, nn_metrics)
             
             self.last_train_date = current_date
             
@@ -332,7 +496,33 @@ class MLEnsembleStrategy:
             logging.error(f"Error during model training: {str(e)}")
             # Keep existing models if training fails
             return
+            
+    def _update_ensemble_weights(
+        self,
+        rf_metrics: TrainingMetrics,
+        xgb_metrics: TrainingMetrics,
+        nn_metrics: TrainingMetrics
+    ) -> None:
+        """Update ensemble weights based on model performance."""
+        # Calculate weights based on validation accuracy
+        total_accuracy = (
+            rf_metrics.accuracy +
+            xgb_metrics.accuracy +
+            nn_metrics.accuracy
+        )
         
+        if total_accuracy > 0:
+            self.ensemble_weights = {
+                'random_forest': rf_metrics.accuracy / total_accuracy,
+                'xgboost': xgb_metrics.accuracy / total_accuracy,
+                'neural_network': nn_metrics.accuracy / total_accuracy
+            }
+            
+            # Log updated weights
+            logging.info("Updated ensemble weights:")
+            for model, weight in self.ensemble_weights.items():
+                logging.info(f"{model}: {weight:.3f}")
+    
     def generate_predictions(
         self,
         prices: pd.Series,

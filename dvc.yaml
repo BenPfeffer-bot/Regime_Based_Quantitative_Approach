@@ -1,5 +1,34 @@
 params:
 - dvclive/params.yaml
+stages:
+  train:
+    cmd: python src/backtesting/ml_ensemble_backtest.py ${lookback_window} ${prediction_threshold}
+      ${min_train_size} ${retrain_frequency} ${tune_hyperparameters}
+    deps:
+    - src/strategies/ml_ensemble.py
+    - src/backtesting/ml_ensemble_backtest.py
+    - data/with_indicators
+    params:
+    - lookback_window
+    - prediction_threshold
+    - min_train_size
+    - retrain_frequency
+    - tune_hyperparameters
+    outs:
+    - models
+    - tuner_results
+    metrics:
+    - dvclive/metrics.json:
+        cache: false
+    plots:
+    - dvclive/plots/metrics:
+        cache: false
+    - data/backtest_results/${experiment_name}/performance_metrics.png:
+        cache: false
+        title: Performance Metrics
+    - data/backtest_results/${experiment_name}/model_metrics.png:
+        cache: false
+        title: Model Metrics
 metrics:
 - dvclive/metrics.json
 plots:
